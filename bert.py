@@ -47,21 +47,32 @@ class BertSelfAttention(nn.Module):
     # next, we need to concat multi-heads and recover the original shape [bs, seq_len, num_attention_heads * attention_head_size = hidden_size]
 
     ### TODO
-    dim_k = key.size(3)
-      # multiply key and value and divide by sqrt(dim_k)
-    attn_val = torch.div(query.matmul(key.transpose(2, 3)), math.sqrt(dim_k))
-      # apply attention mask
-    attn_val = attn_val.add(attention_mask)
-      # apply softmax layer
-    attn_val = F.softmax(attn_val, 3)
-      # multiply attention scores to value
-    attn_output = attn_val.matmul(value) # [bs, num_attention_heads, seq_len, attention_head_size]
-      # concat multi-heads and recover the original shape
-    attn_output = attn_output.transpose(1, 2)
-    bs, seq_len = attn_output.shape[:2]
-    attn_output = attn_output.reshape(bs, seq_len, self.num_attention_heads * self.attention_head_size)
-
-    return attn_output
+    # 获取键值张量的维度大小
+    d_k = key.size(-1)
+    
+    # 计算注意力分数矩阵
+    # 使用矩阵乘法计算 query 和 key 的点积，除以 sqrt(d_k) 进行缩放
+    attention_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+    
+    # 应用注意力掩码，将填充位置的分数设置为一个非常小的值
+    attention_scores += attention_mask
+    
+    # 对注意力分数应用 softmax 函数，获得归一化的注意力权重
+    attention_weights = F.softmax(attention_scores, dim=-1)
+    
+    # 使用注意力权重加权 value，得到注意力输出
+    attention_output = torch.matmul(attention_weights, value)  # [bs, num_attention_heads, seq_len, attention_head_size]
+    
+    # 转置注意力输出的张量，以便拼接多头输出
+    attention_output = attention_output.transpose(1, 2)
+    
+    # 获取批次大小和序列长度
+    batch_size, seq_len = attention_output.size(0), attention_output.size(1)
+    
+    # 重塑注意力输出张量，恢复到原始形状
+    attention_output = attention_output.reshape(batch_size, seq_len, self.num_attention_heads * self.attention_head_size)
+    
+    return attention_output
 
 
   def forward(self, hidden_states, attention_mask):
@@ -108,7 +119,18 @@ class BertLayer(nn.Module):
     """
     # Hint: Remember that BERT applies to the output of each sub-layer, before it is added to the sub-layer input and normalized 
     ### TODO
-    add_norm_output = ln_layer(input.add(dropout(dense_layer(output))))
+    # 对前一层的输出应用全连接层
+    transformed_output = dense_layer(output)
+    
+    # 对全连接层的输出应用 dropout
+    dropout_output = dropout(transformed_output)
+    
+    # 将处理后的输出与原始输入相加
+    residual_output = input + dropout_output
+    
+    # 对相加后的结果应用层归一化
+    add_norm_output = ln_layer(residual_output)
+    
     return add_norm_output
 
 
@@ -123,18 +145,33 @@ class BertLayer(nn.Module):
     4. a add-norm that takes the input and output of the feed forward layer
     """
     ### TODO
-    # attention
-    output = self.self_attention.forward(hidden_states, attention_mask)
-    # add and norm
-    output = self.add_norm(hidden_states, output, self.attention_dense, self.attention_dropout, self.attention_layer_norm)
-    # feed forward
-    input = output
-    output = self.interm_dense(input)
-    output = self.interm_af(output)
-    # add and norm
-    output = self.add_norm(input, output, self.out_dense, self.out_dropout, self.out_layer_norm)
+    # 1. 多头自注意力层
+    attention_output = self.self_attention.forward(hidden_states, attention_mask)
+    
+    # 2. 加法和归一化（Add & Norm）
+    normed_attention_output = self.add_norm(
+        hidden_states, 
+        attention_output, 
+        self.attention_dense, 
+        self.attention_dropout, 
+        self.attention_layer_norm
+    )
+    
+    # 3. 前馈层
+    feed_forward_input = normed_attention_output
+    feed_forward_output = self.interm_dense(feed_forward_input)
+    feed_forward_output = self.interm_af(feed_forward_output)
+    
+    # 4. 加法和归一化（Add & Norm）
+    final_output = self.add_norm(
+        feed_forward_input, 
+        feed_forward_output, 
+        self.out_dense, 
+        self.out_dropout, 
+        self.out_layer_norm
+    )
 
-    return output
+    return final_output
 
 
 
@@ -174,7 +211,6 @@ class BertModel(BertPreTrainedModel):
     seq_length = input_shape[1]
 
     # Get word embedding from self.word_embedding into input_embeds.
-    inputs_embeds = None
     ### TODO
     inputs_embeds = self.word_embedding(input_ids)
 
@@ -182,7 +218,6 @@ class BertModel(BertPreTrainedModel):
     # Get position index and position embedding from self.pos_embedding into pos_embeds.
     pos_ids = self.position_ids[:, :seq_length]
 
-    pos_embeds = None
     ### TODO
     pos_embeds = self.pos_embedding(pos_ids)
 
@@ -193,10 +228,12 @@ class BertModel(BertPreTrainedModel):
 
     # Add three embeddings together; then apply embed_layer_norm and dropout and return.
     ### TODO
-    embeds = inputs_embeds.add(pos_embeds.add(tk_type_embeds))
-    embeds = self.embed_layer_norm(embeds)
-    embeds = self.embed_dropout(embeds)
-    return embeds
+    # 将三个嵌入相加
+    combined_embeds = inputs_embeds + pos_embeds + tk_type_embeds
+    # 应用层归一化和 dropout
+    normalized_embeds = self.embed_layer_norm(combined_embeds)
+    final_embeds = self.embed_dropout(normalized_embeds)
+    return final_embeds
 
 
   def encode(self, hidden_states, attention_mask):

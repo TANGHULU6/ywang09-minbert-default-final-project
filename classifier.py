@@ -45,10 +45,10 @@ class BertSentimentClassifier(torch.nn.Module):
                 param.requires_grad = True
 
         ### TODO
-        # dropout layer
+        # Dropout层
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-        # linear layer
-        self.linear = torch.nn.Linear(config.hidden_size, self.num_labels)
+        # 线性层
+        self.classifier = torch.nn.Linear(config.hidden_size, self.num_labels)
 
 
     def forward(self, input_ids, attention_mask):
@@ -57,14 +57,19 @@ class BertSentimentClassifier(torch.nn.Module):
         # HINT: you should consider what is the appropriate output to return given that
         # the training loop currently uses F.cross_entropy as the loss function.
         ### TODO
-        # get BERT embedding for batch of sentences
-        outputs = self.bert(input_ids, attention_mask)
+        # 使用BERT模型获取批量句子的嵌入表示
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        # 提取池化输出（[CLS]标记的隐藏状态）
         pooler_output = outputs['pooler_output']
+        # cls_embeddings = outputs['last_hidden_state'][:, 0, :]
+        # 应用dropout层
         pooler_output = self.dropout(pooler_output)
-        sentiment_logits = self.linear(pooler_output)
+        # pooler_output = self.dropout(cls_embeddings)
+        # 通过线性层获得情感分类的logits
+        sentiment_logits = self.classifier(pooler_output)
 
         return sentiment_logits
-
+ 
 
 
 class SentimentDataset(Dataset):
@@ -349,7 +354,7 @@ def get_args():
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-                        default=1e-5)
+                        default=1e-3)
 
     args = parser.parse_args()
     return args
